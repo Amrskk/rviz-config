@@ -25,8 +25,11 @@ Make sure the following packages are installed:
 ### ROS 2 (Jazzy)
 ```bash
 sudo apt install ros-jazzy-message-filters
+```
 
 ---
-##Run the package
 
+## Run the package
+```bash
 ros2 run lane_extractor_pkg lane_extractor
+```
