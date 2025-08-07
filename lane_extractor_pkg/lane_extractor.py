@@ -3,12 +3,13 @@ from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point
+from message_filters import Subscriber, ApproximateTimeSynchronizer
 
 import numpy as np
 import open3d as o3d
 from sklearn.cluster import KMeans
 from sensor_msgs_py import point_cloud2
-
+from builtin_interfaces.msg import Duration
 
 # --- ПАРАМЕТРЫ НАСТРОЙКИ --- #
 
@@ -71,23 +72,31 @@ def moving_average_smooth(points, window=5):
 class LaneExtractor(Node):
     def __init__(self):
         super().__init__('lane_extractor')
+        self.sub_front = Subscriber(self, PointCloud2, '/sensor/lidar_front/points')
+        self.sub_left = Subscriber(self, PointCloud2, '/sensor/lidar_left/points')
+        self.sub_right = Subscriber(self, PointCloud2, '/sensor/lidar_right/points')
         
-        self.declare_parameter("input_topic", "/sensor/lidar_front/points")
-        input_topic = self.get_parameter("input_topic").get_parameter_value().string_value
+        self.ts = ApproximateTimeSynchronizer(
+            [self.sub_front, self.sub_left, self.sub_right],
+            queue_size=10,
+            slop=0.1
+        )
+        self.ts.registerCallback(self.callback)
 
-        self.sub = self.create_subscription(PointCloud2, '/sensor/lidar_front/points', self.callback, 10)
         self.pub_left = self.create_publisher(Marker, '/lane_left', 10)
         self.pub_right = self.create_publisher(Marker, '/lane_right', 10)
 
-    def callback(self, msg):
-        # Преобразование в XYZ
-        cloud = ros_pointcloud2_to_xyz(msg)
-
+    def callback(self, msg_front, msg_left, msg_right):
+        clouds = [
+            ros_pointcloud2_to_xyz(msg)
+            for msg in [msg_front, msg_left, msg_right]
+        ]
+        cloud = np.vstack(clouds)
         if cloud.shape[0] == 0:
             self.get_logger().warn("[debug] Received empty PointCloud2 message")
             return
         
-        self.get_logger().info(f"[debug] Raw cloud size: {cloud.shape[0]}")
+        self.get_logger().info(f"[debug] Combined cloud size: {cloud.shape[0]}")
         cloud = cloud[~np.isnan(cloud).any(axis=1)]
 
         # Фильтрация по ROI
@@ -167,8 +176,6 @@ class LaneExtractor(Node):
             marker.scale.x = LINE_WIDTH
             marker.color.r, marker.color.g, marker.color.b, marker.color.a = color
             marker.points = [Point(x=p[0], y=p[1], z=p[2]) for p in smoothed]
-
-            from builtin_interfaces.msg import Duration
             marker.lifetime = Duration(sec=0, nanosec=500_000_000)  # 0.5 seconds
 
             publisher.publish(marker)
@@ -186,4 +193,3 @@ def main(args=None):
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
-
