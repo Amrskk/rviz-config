@@ -71,6 +71,10 @@ def moving_average_smooth(points, window=5):
 class LaneExtractor(Node):
     def __init__(self):
         super().__init__('lane_extractor')
+        
+        self.declare_parameter("input_topic", "/sensor/lidar_front/points")
+        input_topic = self.get_parameter("input_topic").get_parameter_value().string_value
+
         self.sub = self.create_subscription(PointCloud2, '/sensor/lidar_front/points', self.callback, 10)
         self.pub_left = self.create_publisher(Marker, '/lane_left', 10)
         self.pub_right = self.create_publisher(Marker, '/lane_right', 10)
@@ -78,6 +82,12 @@ class LaneExtractor(Node):
     def callback(self, msg):
         # Преобразование в XYZ
         cloud = ros_pointcloud2_to_xyz(msg)
+
+        if cloud.shape[0] == 0:
+            self.get_logger().warn("[debug] Received empty PointCloud2 message")
+            return
+        
+        self.get_logger().info(f"[debug] Raw cloud size: {cloud.shape[0]}")
         cloud = cloud[~np.isnan(cloud).any(axis=1)]
 
         # Фильтрация по ROI
@@ -90,9 +100,12 @@ class LaneExtractor(Node):
 
         if len(ground) < 10:
             return
+        self.get_logger().info(f"[debug] ROI-filtered points: {ground.shape[0]}")
+
 
         # Снижение количества точек
         ground = voxel_downsample(ground, voxel_size=VOXEL_SIZE)
+        self.get_logger().info(f"[debug] Downsampled points: {ground.shape[0]}")
 
         try:
             kmeans = KMeans(n_clusters=NUM_CLUSTERS, n_init='auto').fit(ground[:, :2])
@@ -110,6 +123,7 @@ class LaneExtractor(Node):
 
         median_y = np.median(ground[:, 1])  # делим облако на левую/правую половины
 
+
         # Обход кластеров
         for label in range(max_label + 1):
             points = ground[labels == label]
@@ -120,6 +134,10 @@ class LaneExtractor(Node):
                 left_candidates.append((mean_y, np.mean(points, axis=0), label))
             elif mean_y > median_y + LANE_OFFSET_Y:
                 right_candidates.append((mean_y, np.mean(points, axis=0), label))
+        
+        self.get_logger().info(f"[debug] Left candidates: {len(left_candidates)}")
+        self.get_logger().info(f"[debug] Right candidates: {len(right_candidates)}")
+
 
         # Объединение подходящих кластеров
         if left_candidates:
@@ -149,6 +167,10 @@ class LaneExtractor(Node):
             marker.scale.x = LINE_WIDTH
             marker.color.r, marker.color.g, marker.color.b, marker.color.a = color
             marker.points = [Point(x=p[0], y=p[1], z=p[2]) for p in smoothed]
+
+            from builtin_interfaces.msg import Duration
+            marker.lifetime = Duration(sec=0, nanosec=500_000_000)  # 0.5 seconds
+
             publisher.publish(marker)
 
         if len(left_line) > 1:
